@@ -84,10 +84,18 @@ impl Model {
             .forward_ts(&[input])
             .context("during a forward pass")?;
         let argmax = res.argmax(-1, false);
-        info!("model result: {:?}", argmax);
-        // argmax.
+        let argmax =
+            Vec::<i64>::try_from(argmax).context("when iterating over model result tensor")?;
+        let Some(&argmax) = argmax.first() else {
+            bail!("model returned no items")
+        };
 
-        Ok("TODO: Rust model side is not implemented yet".to_string())
+        let result = constants::CLASSES.get(argmax as usize);
+        let Some(result) = result else {
+            bail!("model returned index out of bounds: {}, expected at most {}", argmax, constants::CLASSES.len())
+        };
+
+        Ok(result.to_string())
     }
 }
 
@@ -105,8 +113,9 @@ impl AppState {
     }
 
     pub async fn predict(&self, image_data: &[u8]) -> Result<Option<String>> {
-        // Load image
         use base64::Engine;
+
+        // Decode base 64
         let prefix = "data:image/jpeg;base64,";
         let image_data = image_data
             .strip_prefix(prefix.as_bytes())
@@ -114,7 +123,15 @@ impl AppState {
         let image_url = base64::engine::general_purpose::STANDARD
             .decode(image_data)
             .context("when decoding image data")?;
-        let image = image::load_from_memory(&image_url).context("when loading image data")?;
+
+        // Decode
+        let image_url = opencv::core::Vector::from_slice(&image_url);
+        let image = opencv::imgcodecs::imdecode(&image_url, opencv::imgcodecs::IMREAD_COLOR)
+            .context("when loading image data")?;
+
+        // Preprocess
+        let image = resize_image(image).context("when preprocessing image")?;
+        let image = opencv_to_tensor(image).context("when converting opencv to tensor")?;
 
         // Update the image list
         let mut images = self.images.lock().await;
@@ -139,17 +156,106 @@ impl AppState {
     }
 }
 
+// def resize_frame(im, new_shape=(224, 224)):
+fn resize_image(image: opencv::prelude::Mat) -> Result<opencv::prelude::Mat> {
+    use opencv::prelude::MatTraitConst;
+
+    // shape = im.shape[:2]  # current shape [height, width]
+
+    let shape = &image.mat_size()[..2]; // current shape [height, width]
+    let target_shape = [224, 224];
+
+    // if isinstance(new_shape, int):
+    //     new_shape = (new_shape, new_shape)
+
+    // Scale ratio (new / old)
+    // r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    let ratio =
+        (target_shape[0] as f32 / shape[0] as f32).min(target_shape[1] as f32 / shape[1] as f32);
+
+    // Compute padding
+    // new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    // dw, dh = \
+    //     new_shape[1] - new_unpad[0], \
+    //     new_shape[0] - new_unpad[1]
+    let new_unpad_x = (shape[1] as f32 * ratio).round() as i32;
+    let new_unpad_y = (shape[0] as f32 * ratio).round() as i32;
+    let dw = (target_shape[1] - new_unpad_x) as f32 / 2.0;
+    let dh = (target_shape[0] - new_unpad_y) as f32 / 2.0;
+
+    // dw /= 2
+    // dh /= 2
+
+    // if shape[::-1] != new_unpad:
+    //     im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    let mut resized_image = opencv::prelude::Mat::default();
+    opencv::imgproc::resize(
+        &image,
+        &mut resized_image,
+        opencv::core::Size::new(new_unpad_x, new_unpad_y),
+        0.0,
+        0.0,
+        opencv::imgproc::INTER_LINEAR,
+    )
+    .context("when resizing image")?;
+
+    // top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    // left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    // im = cv2.copyMakeBorder(
+    //     im, top, bottom, left, right,
+    //     cv2.BORDER_CONSTANT, value=(114, 114, 114)
+    // )
+
+    let top = dh.floor() as i32;
+    let bottom = dh.ceil() as i32;
+    let left = dw.floor() as i32;
+    let right = dw.ceil() as i32;
+
+    let mut border_image = opencv::prelude::Mat::default();
+    opencv::core::copy_make_border(
+        &resized_image,
+        &mut border_image,
+        top,
+        bottom,
+        left,
+        right,
+        opencv::core::BORDER_CONSTANT,
+        opencv::core::Scalar::from((114.0, 114.0, 114.0)),
+    )
+    .context("when making image border")?;
+
+    Ok(border_image)
+}
+
+fn opencv_to_tensor(image: opencv::prelude::Mat) -> Result<Tensor> {
+    let mut buf = opencv::core::Vector::new();
+    let params = opencv::core::Vector::new();
+    opencv::imgcodecs::imencode(".jpg", &image, &mut buf, &params)
+        .context("when encoding opencv")?;
+    let image = image::load_from_memory(buf.as_slice()).context("when decoding opencv")?;
+    Ok(image)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Setup log level
+    let log_level = if let Some(level) = option_env!("LOG_LEVEL") {
+        match level.to_lowercase().as_str() {
+            "trace" => LevelFilter::TRACE,
+            "debug" => LevelFilter::DEBUG,
+            "info" => LevelFilter::INFO,
+            "error" => LevelFilter::ERROR,
+            _ => panic!("unknown log level: {}", level),
+        }
+    } else if cfg!(debug_assertions) {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::INFO
+    };
+
     // Setup logging
     tracing::subscriber::set_global_default(
-        FmtSubscriber::builder()
-            .with_max_level(if cfg!(debug_assertions) {
-                LevelFilter::DEBUG
-            } else {
-                LevelFilter::INFO
-            })
-            .finish(),
+        FmtSubscriber::builder().with_max_level(log_level).finish(),
     )
     .context("when setting up logger")?;
 
