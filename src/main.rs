@@ -35,9 +35,9 @@ fn report_err<T, E: std::fmt::Debug>(res: Result<T, E>) -> Option<T> {
 struct Config {
     model_path: std::path::PathBuf,
     window_size: usize,
-    frame_interval: usize,
-    // mean: [f32; 3],
-    // std: [f32; 3],
+    // frame_interval: usize,
+    mean: [f32; 3],
+    std: [f32; 3],
 }
 
 fn load_file_str(path: impl AsRef<std::path::Path>) -> Result<String> {
@@ -53,26 +53,26 @@ fn load_toml<T: DeserializeOwned>(path: impl AsRef<std::path::Path>) -> Result<T
 }
 
 struct Model {
-    window_size: usize,
+    config: Config,
     module: tch::CModule,
 }
 
 impl Model {
-    pub fn load(window_size: usize, path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let path = path.as_ref();
+    pub fn load(config: Config) -> Result<Self> {
+        let path = &config.model_path;
         let model = tch::CModule::load(path)
             .context(format!("when loading model weights from {:?}", path))?;
         Ok(Self {
-            window_size,
+            config,
             module: model,
         })
     }
 
     pub fn predict(&self, images: &[Tensor]) -> Result<String> {
-        if images.len() != self.window_size {
+        if images.len() != self.config.window_size {
             bail!(
                 "input array expected to have length {}, found {}",
-                self.window_size,
+                self.config.window_size,
                 images.len()
             );
         }
@@ -99,20 +99,20 @@ impl Model {
     }
 }
 
-struct AppState {
-    images: Mutex<VecDeque<Tensor>>,
-    model: Model,
+struct SocketState {
+    images: Vec<Tensor>,
+    model: Arc<Model>,
 }
 
-impl AppState {
-    pub fn new(model: Model) -> Self {
+impl SocketState {
+    pub fn new(model: Arc<Model>) -> Self {
         Self {
-            images: Mutex::new(VecDeque::new()),
+            images: Vec::new(),
             model,
         }
     }
 
-    pub async fn predict(&self, image_data: &[u8]) -> Result<Option<String>> {
+    pub async fn predict(&mut self, image_data: &[u8]) -> Result<Option<String>> {
         use base64::Engine;
 
         // Decode base 64
@@ -132,16 +132,25 @@ impl AppState {
         // Preprocess
         let image = resize_image(image).context("when preprocessing image")?;
         let image = opencv_to_tensor(image).context("when converting opencv to tensor")?;
+        // let image = (image - Tensor::from_slice(&self.model.config.mean))
+        //     / Tensor::from_slice(&self.model.config.std);
+        // let image = image.transpose(0, 1);
+        // let image = image.transpose(0, 2);
 
         // Update the image list
-        let mut images = self.images.lock().await;
-        images.push_back(image);
+        let images = &mut self.images; // self.images.lock().await;
+        images.push(image);
 
-        if images.len() > self.model.window_size {
-            // Extract data
-            let mut data = images.split_off(self.model.window_size);
-            std::mem::swap(&mut data, &mut images);
-            let data: Vec<Tensor> = data.into_iter().collect();
+        if images.len() > self.model.config.window_size {
+            // Extract data and remove excess frames
+            let split =
+                images.len() / self.model.config.window_size * self.model.config.window_size;
+            let mut data = images.split_off(split);
+            std::mem::swap(&mut data, images);
+            let data: Vec<Tensor> = data
+                .into_iter()
+                .take(self.model.config.window_size)
+                .collect();
 
             // Apply the model
             let result = self
@@ -263,35 +272,31 @@ async fn main() -> Result<()> {
     let config: Config = load_toml("config.toml").context("when loading config")?;
 
     // Load model
-    let model =
-        Model::load(config.window_size, &config.model_path).context("when loading model")?;
-
-    let state = Arc::new(AppState::new(model));
+    let model = Model::load(config).context("when loading model")?;
+    let model = Arc::new(model);
 
     // Setup SocketIO
     let ns = socketioxide::Namespace::builder()
         .add("/", {
-            let state = state.clone();
+            let model = model.clone();
             move |socket| {
-                let state = state.clone();
+                let model = model.clone();
                 async move {
-                    report_err(handle_socket_io(state, socket).await);
+                    report_err(handle_socket_io(model, socket).await);
                 }
             }
         })
         .build();
 
     // Setup up the router
-    let app = Router::new()
-        .route("/", get(get_root))
-        .layer(
-            ServiceBuilder::new()
-                .layer(CorsLayer::permissive()) // Enable CORS policy
-                .layer(SocketIoLayer::new(ns)),
-        )
-        // .route("/predict", post(predict))
-        // .route_layer(DefaultBodyLimit::max(200 * 1024 * 1024))
-        .with_state(state);
+    let app = Router::new().route("/", get(get_root)).layer(
+        ServiceBuilder::new()
+            .layer(CorsLayer::permissive()) // Enable CORS policy
+            .layer(SocketIoLayer::new(ns)),
+    );
+    // .route("/predict", post(predict))
+    // .route_layer(DefaultBodyLimit::max(200 * 1024 * 1024))
+    // .with_state(state);
 
     info!("Starting the server on {}...", ADDR);
 
@@ -311,15 +316,18 @@ async fn get_root() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
 
-async fn handle_socket_io(state: Arc<AppState>, socket: Arc<Socket<LocalAdapter>>) -> Result<()> {
+async fn handle_socket_io(model: Arc<Model>, socket: Arc<Socket<LocalAdapter>>) -> Result<()> {
     info!("Socket.IO connected: {:?} {:?}", socket.ns(), socket.sid);
     // let data: serde_json::Value = socket.handshake.data().context("during handshake")?;
     // socket.emit("auth", data).ok();
+
+    let state = Arc::new(Mutex::new(SocketState::new(model)));
 
     socket.on("data_stream", move |socket, data: String, _, _| {
         let state = state.clone();
         async move {
             debug!("Received socketio event on {:?}", socket.sid);
+            let mut state = state.lock().await;
             if let Some(Some(result)) = report_err(state.predict(data.as_bytes()).await) {
                 #[derive(Serialize, Debug)]
                 struct Gloss {
