@@ -17,5 +17,5 @@ rq worker
 3. In the separate terminal, run `socketio` server:
 
 ```sh
-python .\app.py
+python app.py
 ```

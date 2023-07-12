@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request
+from flask import Flask, send_from_directory, request
 from flask_socketio import SocketIO, emit
 from model import rslrecognition, process_frame
 from redis import Redis
@@ -29,7 +29,11 @@ if __name__ == "__main__":
     q = Queue(connection=Redis())
 
     # Setup Flask and SocketIO
-    app = Flask(__name__)
+    app = Flask(__name__,
+            static_url_path="/",
+            static_folder="static"
+        )
+
     app.config["SECRET_KEY"] = "secret!"
     socketio = SocketIO(app)
 
@@ -37,7 +41,7 @@ if __name__ == "__main__":
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return send_from_directory("static", "index.html")
 
     def drop_session(sid):
         if sid in rlss_sessions:
@@ -61,7 +65,7 @@ if __name__ == "__main__":
     def handle_disconnect():
         drop_session(request.sid)
 
-    @socketio.on("data_stream")
+    @socketio.on("data-stream")
     def handle_datastream(data):
         if request.sid not in rlss_sessions:
             return
@@ -89,7 +93,7 @@ if __name__ == "__main__":
         for job in rlss_sess["jobs_list"]:
             match job.get_status():
                 case JobStatus.FINISHED:
-                    emit("data_recognised", {"gloss": job.return_value()})
+                    emit("recognized-caption", {"gloss": job.return_value()})
                     finished_jobs.append(job)
                 case JobStatus.FAILED:
                     finished_jobs.append(job)
