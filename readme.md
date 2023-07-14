@@ -8,10 +8,12 @@
 sudo service redis-server start
 ```
 
-2. Then run:
+2. Then run two workers in the separate terminals:
 
 ```sh
-rq worker
+rq worker streaming
+
+rq worker uploads
 ```
 
 3. In the separate terminal, run `socketio` server:
