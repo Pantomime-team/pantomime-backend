@@ -10,6 +10,7 @@ def readb64(uri):
 
     return img
 
+
 def resize_frame(im, new_shape=(224, 224)):
     shape = im.shape[:2]  # current shape [height, width]
 
