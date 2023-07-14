@@ -1,5 +1,5 @@
-model_path = "mvit16-4.pt"
-window_size = 16 
-frame_interval = 4
+model_path = "mvit32-2.pt"
+window_size = 32 
+frame_interval = 2
 mean = [123.675, 116.28, 103.53]
 std = [58.395, 57.12, 57.375]
