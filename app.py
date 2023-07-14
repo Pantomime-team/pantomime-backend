@@ -163,6 +163,8 @@ if __name__ == "__main__":
                         "gloss": gloss,
                         "turnaround_time": turnaround_time
                     })
+
+                    finished_jobs.append(job)
                 case JobStatus.FAILED | JobStatus.CANCELED:
                     finished_jobs.append(job)
                 case _:
