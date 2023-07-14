@@ -1,6 +1,7 @@
+
 from constants import classes
 from loguru import logger
-from typing import List, Tuple
+from typing import Tuple
 from utils import resize_frame
 
 import cv2
@@ -12,7 +13,17 @@ import torch
 USE_CUDA = False
 
 
-def rslrecognition_process_data(model, input_list, verbose: bool = False) -> str:
+def init_model(model_path: str) -> None:
+
+    global __model
+    __model = torch.jit.load(model_path)
+    __model.eval()
+
+    if USE_CUDA and torch.cuda.is_available():
+        __model = __model.cuda()
+
+
+def rslrecognition_process_data(input_list, verbose: bool = False) -> str:
 
     input_tensor = np.stack(input_list, axis=1)[None][None]
     input_tensor = input_tensor.astype(np.float32)
@@ -26,7 +37,7 @@ def rslrecognition_process_data(model, input_list, verbose: bool = False) -> str
         logger.info("Starting recognition")
 
     with torch.no_grad():
-        output = model(input_tensor)[0]
+        output = __model(input_tensor)[0]
 
     gloss = str(classes[output.argmax().item()])
 
@@ -39,7 +50,7 @@ def rslrecognition_process_data(model, input_list, verbose: bool = False) -> str
     return gloss
 
 
-def rslrecognition_stream(model_path, input_list, config, start_time, verbose: bool = False) -> Tuple[str, float]:
+def rslrecognition_stream(input_list, config, start_time, verbose: bool = False) -> Tuple[str, float]:
 
     fallback_seconds = time.time() - start_time
     logger.info(f"This job is {fallback_seconds:2f}s old")
@@ -47,26 +58,10 @@ def rslrecognition_stream(model_path, input_list, config, start_time, verbose: b
     if len(input_list) != config["window_size"]:
         raise ValueError("Input list must be of length window_size")
 
-    # TODO: DO NOT USE. root of all evil. Get rid of this, when someone figures out how to
-    #       pass the model to the worker.
-    model = torch.jit.load(model_path)
-    model.eval()
-
-    if USE_CUDA and torch.cuda.is_available():
-        model = model.cuda()
-
-    return rslrecognition_process_data(model, input_list, verbose), time.time() - start_time
+    return rslrecognition_process_data(input_list, verbose), time.time() - start_time
 
 
-def rslrecognition_video(model_path, path_to_input_video, config, remove_finish: bool = False, verbose: bool = False) -> str:
-
-    # TODO: DO NOT USE. root of all evil. Get rid of this, when someone figures out how to
-    #       pass the model to the worker.
-    model = torch.jit.load(model_path)
-    model.eval()
-
-    if USE_CUDA and torch.cuda.is_available():
-        model = model.cuda()
+def rslrecognition_video(path_to_input_video, config, remove_finish: bool = False, verbose: bool = False) -> str:
 
     cap = cv2.VideoCapture(path_to_input_video)
 
@@ -89,7 +84,7 @@ def rslrecognition_video(model_path, path_to_input_video, config, remove_finish:
 
             if len(input_list) == config["window_size"]:
                 output = rslrecognition_process_data(
-                    model, input_list, verbose
+                    input_list, verbose
                 )
 
                 output_list.append(output)

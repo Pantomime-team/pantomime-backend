@@ -1,7 +1,7 @@
 
 from flask import Flask, send_from_directory, request
 from flask_socketio import SocketIO, emit
-from model import process_frame, rslrecognition_stream, rslrecognition_video
+from model_jobs import process_frame, rslrecognition_stream, rslrecognition_video
 from redis import Redis
 from rq import Queue
 from rq.job import JobStatus
@@ -32,7 +32,6 @@ if __name__ == "__main__":
         config = toml.load(f)
 
     # Load config data
-    model_path = config["model_path"]
     model_mean = config["mean"]
     model_std = config["std"]
     window_size = config["window_size"]
@@ -142,7 +141,6 @@ if __name__ == "__main__":
 
             job = q_streaming.enqueue(
                 rslrecognition_stream,
-                model_path,
                 input_tensor,
                 config,
                 start_time=time(),
@@ -229,7 +227,6 @@ if __name__ == "__main__":
 
         job = q_uploads.enqueue(
             rslrecognition_video,
-            model_path,
             video_path,
             config,
             remove_finish=True,
