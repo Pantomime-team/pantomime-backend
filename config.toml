@@ -1,5 +1,6 @@
-model_path = "mvit32-2.pt"
-window_size = 32 
-frame_interval = 2
+model_path = "resnet48-1.pt"
+window_size = 48
+frame_interval = 1
+threeshold = 0.5
 mean = [123.675, 116.28, 103.53]
 std = [58.395, 57.12, 57.375]

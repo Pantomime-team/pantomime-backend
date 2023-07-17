@@ -12,7 +12,6 @@ import torch
 
 USE_CUDA = False
 
-
 def init_model(model_path: str) -> None:
 
     global __model
@@ -23,7 +22,7 @@ def init_model(model_path: str) -> None:
         __model = __model.cuda()
 
 
-def rslrecognition_process_data(input_list, verbose: bool = False) -> str:
+def rslrecognition_process_data(input_list, config, verbose: bool = False) -> str:
 
     input_tensor = np.stack(input_list, axis=1)[None][None]
     input_tensor = input_tensor.astype(np.float32)
@@ -46,8 +45,9 @@ def rslrecognition_process_data(input_list, verbose: bool = False) -> str:
             f"Recognized \"{gloss}\" with confidence: {output.max().item() * 100:.2f}%"
         )
         logger.info(f"Recognition took {time.time() - start_time:.2f} seconds")
-
-    return gloss
+    if output.max() > config['threeshold']:
+        return gloss
+    return ""
 
 
 def rslrecognition_stream(input_list, config, start_time, verbose: bool = False) -> Tuple[str, float]:
@@ -58,7 +58,7 @@ def rslrecognition_stream(input_list, config, start_time, verbose: bool = False)
     if len(input_list) != config["window_size"]:
         raise ValueError("Input list must be of length window_size")
 
-    return rslrecognition_process_data(input_list, verbose), time.time() - start_time
+    return rslrecognition_process_data(input_list, config, verbose), time.time() - start_time
 
 
 def rslrecognition_video(path_to_input_video, config, remove_finish: bool = False, verbose: bool = False) -> str:
@@ -84,7 +84,7 @@ def rslrecognition_video(path_to_input_video, config, remove_finish: bool = Fals
 
             if len(input_list) == config["window_size"]:
                 output = rslrecognition_process_data(
-                    input_list, verbose
+                    input_list, config, verbose
                 )
 
                 output_list.append(output)
