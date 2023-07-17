@@ -11,9 +11,9 @@ sudo service redis-server start
 2. Then run two workers in the separate terminals:
 
 ```sh
-rq worker streaming
+python worker.py streaming
 
-rq worker uploads
+python worker.py uploads
 ```
 
 3. In the separate terminal, run `socketio` server:
